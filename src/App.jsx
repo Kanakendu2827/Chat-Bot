@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const isApiKeyMissing = !apiKey;
 const assistantSystemMessage =
   "You are a helpful Gemini-style assistant. Answer conversationally and helpfully. " +
   "When the user asks for Python code, provide only the code inside a fenced code block. " +
@@ -205,6 +206,11 @@ function Chatbot() {
         </div>
 
         <div className="mx-auto w-full max-w-3xl">
+          {isApiKeyMissing && (
+            <div className="mb-4 rounded-3xl border border-yellow-500/20 bg-yellow-500/10 p-4 text-sm text-yellow-100 shadow-sm shadow-yellow-500/10">
+              Missing Gemini API key. Configure `VITE_GEMINI_API_KEY` as a build environment variable or create a local `.env` file with that key.
+            </div>
+          )}
           <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/90 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
             <div className="flex items-center justify-between gap-4 border-b border-white/10 bg-slate-950/95 px-6 py-4">
               <div>
@@ -255,14 +261,16 @@ function Chatbot() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  className="flex-grow rounded-3xl border border-slate-800 bg-slate-950/90 px-5 py-4 text-sm text-white placeholder:text-slate-500 focus:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/20 transition-all resize-none"
-                  placeholder="Type your message... Use Shift+Enter for a new line."
+                  disabled={isApiKeyMissing}
+                  className="flex-grow rounded-3xl border border-slate-800 bg-slate-950/90 px-5 py-4 text-sm text-white placeholder:text-slate-500 focus:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/20 transition-all resize-none disabled:cursor-not-allowed disabled:opacity-60"
+                  placeholder={isApiKeyMissing ? "Gemini key missing. Set VITE_GEMINI_API_KEY to enable chat." : "Type your message... Use Shift+Enter for a new line."}
                 />
                 <button
                   onClick={handleSend}
-                  className="inline-flex min-w-[120px] items-center justify-center rounded-3xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-fuchsia-500/25 transition duration-300 hover:-translate-y-0.5 hover:shadow-xl"
+                  disabled={isApiKeyMissing}
+                  className={`inline-flex min-w-[120px] items-center justify-center rounded-3xl bg-gradient-to-r from-fuchsia-500 to-violet-500 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-fuchsia-500/25 transition duration-300 hover:-translate-y-0.5 hover:shadow-xl ${isApiKeyMissing ? "cursor-not-allowed opacity-60 hover:translate-y-0 hover:shadow-none" : ""}`}
                 >
-                  Send
+                  {isApiKeyMissing ? "API key required" : "Send"}
                 </button>
               </div>
             </div>
