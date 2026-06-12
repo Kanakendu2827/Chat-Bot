@@ -1,8 +1,14 @@
 import { useState, useRef } from "react";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY;
+const openRouterApiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
+const apiKey = openRouterApiKey || geminiApiKey;
+const isOpenRouterKey = !!openRouterApiKey || (apiKey ? /^sk-or-/.test(apiKey) : false);
+const isApiKeyLooksLikeOAuthToken = apiKey
+  ? /^(?:AQ\.|ya29\.|1\/|eyJ|ya29)[A-Za-z0-9_.-]+$/.test(apiKey)
+  : false;
+const genAI = apiKey && !isOpenRouterKey && !isApiKeyLooksLikeOAuthToken ? new GoogleGenerativeAI(apiKey) : null;
 const isApiKeyMissing = !apiKey;
 const assistantSystemMessage =
   "You are a helpful Gemini-style assistant. Answer conversationally and helpfully. " +
@@ -77,10 +83,13 @@ function Chatbot() {
 
   const handleSend = async () => {
     if (!input.trim()) return;
-    if (!genAI) {
-      setErrorMessage(
-        "Missing Gemini API key. Add VITE_GEMINI_API_KEY to a .env file at the project root."
-      );
+    if (!genAI && !isOpenRouterKey) {
+      const message = isApiKeyMissing
+        ? "Missing API key. Add VITE_GEMINI_API_KEY or VITE_OPENROUTER_API_KEY to a .env file at the project root."
+        : isApiKeyLooksLikeOAuthToken
+        ? "Invalid API key format. VITE_GEMINI_API_KEY or VITE_OPENROUTER_API_KEY must be a Google Cloud API key or an OpenRouter key, not an OAuth token or service account token."
+        : "Unsupported API key type. Use a Google Cloud API key for Gemini or an OpenRouter key starting with sk-or-.";
+      setErrorMessage(message);
       return;
     }
 
@@ -90,9 +99,19 @@ function Chatbot() {
     setIsTyping(true);
     setErrorMessage("");
 
-    const botReply = await getGeminiResponse(input);
-    setMessages([...newMessages, { sender: "bot", text: botReply }]);
-    setIsTyping(false);
+    try {
+      const botReply = await getAIResponse(input);
+      setMessages([...newMessages, { sender: "bot", text: botReply }]);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : "Unexpected error from AI.";
+      setErrorMessage(errorText);
+      setMessages([
+        ...newMessages,
+        { sender: "bot", text: `Sorry, I couldn't get a response. ${errorText}` },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   const handleKeyDown = (event) => {
@@ -104,6 +123,50 @@ function Chatbot() {
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  const getOpenRouterResponse = async (userInput) => {
+    const response = await fetch("/openrouter", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: assistantSystemMessage },
+          { role: "user", content: userInput },
+        ],
+        max_tokens: 1200,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} ${errorText}`);
+    }
+
+    const data = await response.json();
+    const message =
+      data?.choices?.[0]?.message?.content ||
+      data?.choices?.[0]?.text ||
+      data?.output?.[0]?.content?.[0]?.text ||
+      data?.output?.[0]?.content?.[0]?.message ||
+      data?.output?.text;
+
+    if (!message) {
+      throw new Error(`OpenRouter returned no text response. Raw body: ${JSON.stringify(data)}`);
+    }
+
+    return message;
+  };
+
+  const getAIResponse = async (userInput) => {
+    if (isOpenRouterKey) {
+      return getOpenRouterResponse(userInput);
+    }
+    return getGeminiResponse(userInput);
+  };
+
   const isRetryableGeminiError = (message) => {
     return /(?:503|high demand|temporarily unavailable|timeout|unavailable)/i.test(message);
   };
@@ -114,10 +177,17 @@ function Chatbot() {
     );
   };
 
+  const isAuthenticationError = (message) => {
+    return /invalid authentication credentials|ACCESS_TOKEN_TYPE_UNSUPPORTED|expected OAuth 2 access token|auth/i.test(
+      message
+    );
+  };
+
   const getGeminiResponse = async (userInput) => {
     const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.1-flash", "gemini-3.1-mini"];
     let lastError;
     let quotaError = false;
+    let authError = false;
 
     for (const modelName of modelsToTry) {
       let attempt = 0;
@@ -151,6 +221,13 @@ function Chatbot() {
             break;
           }
 
+          if (isAuthenticationError(message)) {
+            authError = true;
+            chatSessionRef.current = null;
+            console.warn(`Authentication failed for ${modelName}:`, message);
+            break;
+          }
+
           if (!isRetryableGeminiError(message)) {
             chatSessionRef.current = null;
             break;
@@ -176,7 +253,9 @@ function Chatbot() {
       lastError instanceof Error
         ? lastError.message
         : "Unexpected error from Gemini.";
-    const userMessage = quotaError
+    const userMessage = authError
+      ? "Authentication failed. Verify that VITE_GEMINI_API_KEY is a valid Google Cloud API key for the Generative AI API and not an OAuth or service account token."
+      : quotaError
       ? "Quota exceeded for the selected Gemini model(s). This app is now using available flash models only. Please check your Google AI quota or billing if you need access to premium models."
       : `${message} Please try again shortly.`;
     setErrorMessage(userMessage);
@@ -208,7 +287,12 @@ function Chatbot() {
         <div className="mx-auto w-full max-w-3xl">
           {isApiKeyMissing && (
             <div className="mb-4 rounded-3xl border border-yellow-500/20 bg-yellow-500/10 p-4 text-sm text-yellow-100 shadow-sm shadow-yellow-500/10">
-              Missing Gemini API key. Configure `VITE_GEMINI_API_KEY` as a build environment variable or create a local `.env` file with that key.
+              Missing API key. Configure `VITE_GEMINI_API_KEY` or `VITE_OPENROUTER_API_KEY` in a local `.env` file.
+            </div>
+          )}
+          {!isApiKeyMissing && isApiKeyLooksLikeOAuthToken && (
+            <div className="mb-4 rounded-3xl border border-yellow-500/20 bg-yellow-500/10 p-4 text-sm text-yellow-100 shadow-sm shadow-yellow-500/10">
+              Invalid API key format. Use a Google Cloud API key for Gemini or an OpenRouter key starting with `sk-or-`, not an OAuth token or service account token.
             </div>
           )}
           <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/90 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
@@ -263,7 +347,7 @@ function Chatbot() {
                   onKeyDown={handleKeyDown}
                   disabled={isApiKeyMissing}
                   className="flex-grow rounded-3xl border border-slate-800 bg-slate-950/90 px-5 py-4 text-sm text-white placeholder:text-slate-500 focus:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/20 transition-all resize-none disabled:cursor-not-allowed disabled:opacity-60"
-                  placeholder={isApiKeyMissing ? "Gemini key missing. Set VITE_GEMINI_API_KEY to enable chat." : "Type your message... Use Shift+Enter for a new line."}
+                  placeholder={isApiKeyMissing ? "API key missing. Set VITE_GEMINI_API_KEY or VITE_OPENROUTER_API_KEY to enable chat." : "Type your message... Use Shift+Enter for a new line."}
                 />
                 <button
                   onClick={handleSend}
