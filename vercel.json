@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/openrouter",
+      "destination": "https://openrouter.ai/api/v1/chat/completions"
+    }
+  ]
+}
